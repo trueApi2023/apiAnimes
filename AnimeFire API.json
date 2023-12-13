@@ -1,0 +1,131 @@
+
+from flask import Flask, jsonify, request
+import requests
+from bs4 import BeautifulSoup
+import json
+app = Flask(__name__)
+@app.route('/')
+def start():
+    return jsonify({'Admin': '@StkDeveloper'})
+def get_episodes_data(page):
+    url = f"https://animefire.vip/home/{page}"
+    response = requests.get(url)
+    content = response.content
+    soup = BeautifulSoup(content, "html.parser")
+    episodes_data = []
+    episodes = soup.find_all("div", class_="divCardUltimosEpsHome")
+    for episode in episodes:
+        anime_name = episode.find("h3", class_="animeTitle").text.strip()
+        episode_number = episode.find("span", class_="numEp").text.strip()
+        episode_url = episode.find("a")["href"]
+        image_url = episode.find("img")["data-src"]
+        date_modified = episode.find("span", class_="ep-dateModified")["data-date-modified"]
+        episode_name = episode_url.split("/animes/")[-1]
+        anime_name_from_url = image_url.split("/")[5]
+        new_image_url = f"https://animefire.vip/img/animes/{anime_name_from_url}-large.webp"
+        episode_data = {
+            "Title": anime_name,
+            "Ep": episode_number,
+            "ID": episode_name,
+            "Image": new_image_url,
+            "Uploaded": date_modified
+        }
+        episodes_data.append(episode_data)
+    return episodes_data
+@app.route('/api/home')
+def get_home_page():
+    page = request.args.get('page', default=1, type=int)
+    episodes_data = get_episodes_data(page)
+    return jsonify(episodes_data)
+def get_best_quality(video_data):
+    quality_order = ['fhd', '1080p', 'hd', '720p', 'sd', '480p']
+    for quality in quality_order:
+        for item in video_data:
+            if quality in item["src"]:
+                return {"URL": item["src"].replace("\\", "")}
+    return {"URL": ''}
+def get_anime_url(anime_id, num_ep):
+    return f"https://animefire.vip/animes/{anime_id}/{num_ep}"
+@app.route('/api/player/<anime_id>/<num_ep>', methods=['GET'])
+def get_video_urls(anime_id, num_ep):
+    anime_url = get_anime_url(anime_id, num_ep)
+    response = requests.get(anime_url)
+    if response.status_code == 200:
+        content = response.content
+        soup = BeautifulSoup(content, "html.parser")
+        video_element = soup.find("video")
+        if video_element:
+            video_src = video_element.get("data-video-src")
+            video_response = requests.get(video_src)
+            video_content = video_response.content
+            video_data = json.loads(video_content)["data"]
+            best_quality = get_best_quality(video_data)
+            return jsonify(best_quality)
+        else:
+            return jsonify({"error": "Video não encontrado"}), 400
+    else:
+        return jsonify({"error": "Página não encontrada"}), 404
+@app.route('/api/search', methods=['GET'])
+def search_anime():
+    anime_name = request.args.get('name')
+    url = f"https://animefire.vip/pesquisar/{anime_name}"
+    response = requests.get(url)
+    content = response.content
+    soup = BeautifulSoup(content, "html.parser")
+    anime_cards = soup.find_all("div", class_="col-6 col-sm-4 col-md-3 col-lg-2 mb-1 minWDanime divCardUltimosEps")
+    results = []
+    for card in anime_cards:
+        anime_title = card.find("h3", class_="animeTitle")
+        anime_url = card.find("a")["href"]
+        anime_image_url = card.find("img", class_="card-img-top lazy imgAnimes")["data-src"]
+        anime_rating = card.find("span", class_="horaUltimosEps")
+        anime_tags = card.find("span", class_="pr-1")
+        anime_id = anime_url.split("/animes/")[-1]
+        result = {
+            "Title": anime_title.text.strip() if anime_title else 'N/A',
+            "ID": anime_id if anime_url else 'N/A',
+            "Image": anime_image_url if anime_image_url else 'N/A',
+            "Rating": anime_rating.text.strip() if anime_rating else 'N/A',
+            "Age": anime_tags.text.strip() if anime_tags else 'N/A',
+        }
+        results.append(result)
+    return jsonify(results)
+@app.route('/api/details', methods=['GET'])
+def get_anime_details():
+    anime_id = request.args.get('id')
+    if not anime_id:
+        return jsonify({"error": "Cadê o ID desgraça kk"}), 400
+    url = f"https://animefire.vip/animes/{anime_id}"
+    response = requests.get(url)
+    if response.status_code != 200:
+        return jsonify({"error": "Anime não encontrado"}), 500
+    content = response.content
+    soup = BeautifulSoup(content, "html.parser")
+    data = {"Episodes": []}
+    anime_title = soup.find("h1", class_="quicksand400")
+    anime_japanese_title = soup.find("h6", class_="text-gray")
+    anime_votes = soup.find("h6", id="anime_votos")
+    anime_genres = soup.find_all("a", class_="spanGenerosLink")
+    anime_synopsis_tag = soup.find("div", class_="divSinopse")
+    anime_synopsis = anime_synopsis_tag.find_next("span", class_="spanAnimeInfo").text.strip() if anime_synopsis_tag else 'N/A'
+    anime_name_in_url = '-'.join(anime_id.split('-')[:-2]).replace('-dublado-', '').replace('-todos', '').replace('todos', '')
+    anime_image_url = f"https://animefire.vip/img/animes/{anime_name_in_url}-large.webp"
+    url_id = url.split("/animes/")[-1]
+    data["ID"] = url_id
+    data["Title"] = anime_title.text.strip() if anime_title else 'N/A'
+    data["Title_Japanese"] = anime_japanese_title.text.strip() if anime_japanese_title else 'N/A'
+    data["Votes"] = anime_votes.text.strip() if anime_votes else 'N/A'
+    data["Genres"] = [{"Genero": genre.text.strip()} for genre in anime_genres] if anime_genres else 'N/A'
+    data["Sinopse"] = anime_synopsis
+    data["Image"] = anime_image_url
+    episodes_container = soup.find("div", class_="div_video_list")
+    if episodes_container:
+        episodes = episodes_container.find_all("a", class_="lEp")
+        for episode in episodes:
+            episode_title = episode.text.strip()
+            episode_url = episode['href']
+            anime_id = episode_url.split("/animes/")[-1]
+            data["Episodes"].append({"Title": episode_title, "ID": anime_id})
+    return jsonify(data)
+if __name__ == '__main__':
+    app.run(debug=True)
